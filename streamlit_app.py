@@ -148,11 +148,11 @@ def generate_schedule(staff_df, start_date, days):
                         model.Add(shifts[(n, d, 0)] == 0)
             
             # 4/17, 4/27 特殊名單禁休
-            if day_num in [17, 27]:
-                banned_2 = ["徐O君", "鄭O潔"]
-                for n in names:
-                    if any(b in n for b in banned_2) and not ("洪O雯" in n):
-                        model.Add(shifts[(n, d, 0)] == 0)
+           # if day_num in [17, 27]:
+           #     banned_2 = ["徐O君", "鄭O潔"]
+           #     for n in names:
+           #        if any(b in n for b in banned_2) and not ("洪O雯" in n):
+           #             model.Add(shifts[(n, d, 0)] == 0)
 
         # 寫入人力門檻
         for n in names:
