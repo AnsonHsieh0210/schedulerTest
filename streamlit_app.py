@@ -58,7 +58,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🏬 百貨櫃位智慧排班系統 (精準人力版)")
+st.title("🏬 百貨櫃位智慧排班系統 (彈性最佳化版)")
 
 # --- 人員資料編輯區 ---
 st.sidebar.header("🗓️ 設定月份")
@@ -71,7 +71,7 @@ edited_df = st.data_editor(
     st.session_state.staff_df, 
     num_rows="dynamic", 
     use_container_width=True, 
-    key="editor_v19",
+    key="editor_v20",
     column_config={
         "劃休(/)": st.column_config.TextColumn("劃休(/)"),
         "補休(補)": st.column_config.TextColumn("補休(補)"),
@@ -120,15 +120,15 @@ def generate_schedule(staff_df, start_date, days):
                 else:
                     p = model.NewBoolVar(f'p_off_{n}_{d}')
                     model.Add(shifts[(n, d, 0)] == 1).OnlyEnforceIf(p)
-                    objective_terms.append(p * (2000 if is_p2 else 200))
+                    objective_terms.append(p * (2000 if is_p2 else 200)) # 滿足預約假別給予高分
             else:
                 if day_num in assign_A: model.Add(shifts[(n, d, 1)] == 1)
                 if day_num in assign_B: model.Add(shifts[(n, d, 2)] == 1)
 
-    # === 精準人力門檻 & 四月特殊禁休規則 ===
+    # === 彈性人力門檻 & 四月特殊禁休規則 ===
     for d in range(days):
         day_num = d + 1
-        req_A, req_B = 3, 2 # 平日精準 3A 2B
+        req_A, req_B = 3, 2 # 平日基準 3A 2B
         
         if month == 4:
             if day_num in [4, 5]:
@@ -143,19 +143,16 @@ def generate_schedule(staff_df, start_date, days):
                 for n in names:
                     if any(b in n for b in banned_1) and not ("洪O雯" in n):
                         model.Add(shifts[(n, d, 0)] == 0)
-            
-            if day_num in [17, 27]:
-                banned_2 = ["徐O君", "鄭O潔"]
-                for n in names:
-                    if any(b in n for b in banned_2) and not ("洪O雯" in n):
-                        model.Add(shifts[(n, d, 0)] == 0)
+        
 
         for n in names:
             model.Add(sum(shifts[(n, d, s)] for s in [0,1,2]) == 1)
+            # 關鍵修改：鼓勵休假！給予自動排休微小加分(+5)，讓 AI 沒事就放人假，不亂抓人上班
+            objective_terms.append(shifts[(n, d, 0)] * 5)
         
-        # 關鍵修改：將 >= 改為 ==，確保每天只排剛好的人數，不多排！
-        model.Add(sum(shifts[(n, d, 1)] for n in names) == req_A)
-        model.Add(sum(shifts[(n, d, 2)] for n in names) == req_B)
+        # 關鍵修改：改回 >=，允許特殊狀況下超過基本門檻
+        model.Add(sum(shifts[(n, d, 1)] for n in names) >= req_A)
+        model.Add(sum(shifts[(n, d, 2)] for n in names) >= req_B)
 
     # === 排班健康規則 & 早晚班平均規則 & 防碎班邏輯 ===
     for n in names:
@@ -223,13 +220,13 @@ def generate_schedule(staff_df, start_date, days):
 # --- 🚀 執行區 ---
 st.markdown("---")
 st.markdown("#### 📅 智慧排班機制說明：")
-st.info("⚠️ 已套用**精準人力管制**：每日最高人數限制為 3A2B，確保同仁有充分休息時間。\n⚠️ **4/4, 4/5** 特殊切換為 3A3B。")
+st.info("⚠️ **彈性人力機制**：每日至少 3A2B，支援特殊禁休條件超越此門檻。無特殊狀況下 AI 會極力避免增加不必要人力。\n⚠️ **4/4, 4/5** 特殊門檻為 3A3B。")
 
 if st.button("🚀 執行 AI 智慧排班"):
     final_df = generate_schedule(edited_df, target_month, num_days)
     if final_df is not None:
-        st.success("✅ 班表生成成功！人力已達最佳配置。")
+        st.success("✅ 班表生成成功！已套用彈性人力與防碎班機制。")
         st.data_editor(final_df, use_container_width=True, height=550)
         st.download_button("📥 下載 CSV", final_df.to_csv(index=False).encode('utf-8-sig'), "Schedule.csv")
     else:
-        st.error("🚨 條件衝突。這可能是因為您在某一天手動指定的早班或晚班人數【超過】了 3A 或 2B 的上限。")
+        st.error("🚨 條件衝突。請確認是否過多人員劃休，導致無法滿足基本的 3A2B。")
