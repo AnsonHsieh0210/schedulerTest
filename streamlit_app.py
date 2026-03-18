@@ -58,7 +58,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🏬 百貨櫃位智慧排班系統 (目標 5A3B 優化版)")
+st.title("🏬 百貨櫃位智慧排班系統 (做三休一版)")
 
 # --- 人員資料編輯區 ---
 st.sidebar.header("🗓️ 設定月份")
@@ -71,7 +71,7 @@ edited_df = st.data_editor(
     st.session_state.staff_df, 
     num_rows="dynamic", 
     use_container_width=True, 
-    key="editor_v24",
+    key="editor_v25",
     column_config={
         "劃休(/)": st.column_config.TextColumn("劃休(/)"),
         "補休(補)": st.column_config.TextColumn("補休(補)"),
@@ -163,9 +163,9 @@ def generate_schedule(staff_df, start_date, days):
 
         for n in names:
             model.Add(sum(shifts[(n, d, s)] for s in [0,1,2]) == 1)
-            # 💡 鼓勵機制：為了朝 5A3B 邁進，賦予上班正向分數（早班優先於晚班）
-            objective_terms.append(shifts[(n, d, 1)] * 3) # 早班加 3 分
-            objective_terms.append(shifts[(n, d, 2)] * 2) # 晚班加 2 分
+            # 鼓勵排早晚班朝 5A3B 邁進
+            objective_terms.append(shifts[(n, d, 1)] * 3) 
+            objective_terms.append(shifts[(n, d, 2)] * 2) 
         
         model.Add(sum(shifts[(n, d, 1)] for n in names) >= min_A)
         model.Add(sum(shifts[(n, d, 1)] for n in names) <= max_A)
@@ -178,7 +178,7 @@ def generate_schedule(staff_df, start_date, days):
         is_xu = ("徐O君" in n)
         assigned_all = set(manual_A_all[n] + manual_B_all[n])
         
-        # 💡 洪O雯、徐O君：極度偏好早班 (額外加分)
+        # 洪O雯、徐O君：極度偏好早班
         if is_p1 or is_xu:
             for d in range(days):
                 objective_terms.append(shifts[(n, d, 1)] * 10) 
@@ -188,17 +188,19 @@ def generate_schedule(staff_df, start_date, days):
                 if (d+1) in manual_B_all[n] and (d+2) in manual_A_all[n]: pass 
                 else: model.Add(shifts[(n,d,2)] + shifts[(n,d+1,1)] <= 1)
             
-            for d in range(days-4): 
-                if sum(1 for i in range(5) if (d+i+1) in assigned_all) == 5: pass
-                else: model.Add(sum(shifts[(n,d+i,s)] for i in range(5) for s in [1,2]) <= 4)
+            # --- 關鍵修改：做三休一防護網 ---
+            for d in range(days-3): 
+                # 若手動強制連上4天則放行，否則強制在任何連續 4 天內，上班日不得超過 3 天
+                if sum(1 for i in range(4) if (d+i+1) in assigned_all) == 4: pass
+                else: model.Add(sum(shifts[(n,d+i,s)] for i in range(4) for s in [1,2]) <= 3)
             
-            # 💡 月休 11 天鐵律 (手動排滿則下修避免當機)
+            # 月休 11 天鐵律
             required_offs = 11 if month == 4 else 9
             actual_req_offs = min(required_offs, days - len(assigned_all))
             if actual_req_offs > 0:
                 model.Add(sum(shifts[(n,d,0)] for d in range(days)) >= actual_req_offs)
             
-        # 💡 其他人的早晚班平均 (排除洪、徐)
+        # 其他人的早晚班平均 (排除洪、徐)
         if not (is_p1 or is_xu):
             total_A = sum(shifts[(n, d, 1)] for d in range(days))
             total_B = sum(shifts[(n, d, 2)] for d in range(days))
@@ -208,7 +210,7 @@ def generate_schedule(staff_df, start_date, days):
             model.AddAbsEquality(abs_diff, diff)
             objective_terms.append(abs_diff * -15) 
 
-        # 防碎班邏輯
+        # 防碎班邏輯 (仍保留，避免單日孤立班)
         for d in range(1, days - 1):
             iso_work = model.NewBoolVar(f'iso_work_{n}_{d}')
             model.AddBoolOr([shifts[(n, d-1, 0)].Not(), shifts[(n, d, 0)], shifts[(n, d+1, 0)].Not(), iso_work])
@@ -246,13 +248,13 @@ def generate_schedule(staff_df, start_date, days):
 # --- 🚀 執行區 ---
 st.markdown("---")
 st.markdown("#### 📅 智慧排班機制說明：")
-st.info("⭐ **目標 5A3B (保底 3A2B)**：在滿足 11 天休假的前提下，系統會盡可能將人力加到最滿。\n⭐ **洪、徐專屬排班**：解除早晚班平衡限制，並大幅提高分配早班的機率。")
+st.info("⭐ **做三休一防護網**：系統限制每位同仁連續上班不得超過 3 天（手動指派除外）。\n⭐ **目標 5A3B (保底 3A2B)**：自動最大化每日人力配置。")
 
 if st.button("🚀 執行 AI 智慧排班"):
     final_df = generate_schedule(edited_df, target_month, num_days)
     if final_df is not None:
-        st.success("✅ 班表生成成功！已妥善分配四月份的 11 天休假與最大化早晚班。")
+        st.success("✅ 班表生成成功！已成功套用『做三休一』之排班防護。")
         st.data_editor(final_df, use_container_width=True, height=550)
         st.download_button("📥 下載 CSV", final_df.to_csv(index=False).encode('utf-8-sig'), "Schedule.csv")
     else:
-        st.error("🚨 極端狀況：可能單日排休人數過多，連最低的 3A2B 門檻都無法達到。")
+        st.error("🚨 條件衝突：『做三休一』規則大幅增加了排班難度，若顯示此錯誤，請嘗試減少同仁在假日前後的劃休天數。")
