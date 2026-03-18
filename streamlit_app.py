@@ -58,7 +58,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🏬 百貨櫃位智慧排班系統 (區間門檻特化版)")
+st.title("🏬 百貨櫃位智慧排班系統 (指定班次優先版)")
 
 # --- 人員資料編輯區 ---
 st.sidebar.header("🗓️ 設定月份")
@@ -71,7 +71,7 @@ edited_df = st.data_editor(
     st.session_state.staff_df, 
     num_rows="dynamic", 
     use_container_width=True, 
-    key="editor_v21",
+    key="editor_v23",
     column_config={
         "劃休(/)": st.column_config.TextColumn("劃休(/)"),
         "補休(補)": st.column_config.TextColumn("補休(補)"),
@@ -103,6 +103,10 @@ def generate_schedule(staff_df, start_date, days):
     shifts = {(n, d, s): model.NewBoolVar(f's_{n}_{d}_{s}') for n in names for d in range(days) for s in [0,1,2]}
     objective_terms = []
     
+    # 預處理手動指派，以供後續特權判定
+    manual_A_all = {}
+    manual_B_all = {}
+    
     for _, row in staff_df.iterrows():
         n = row["姓名"]
         is_p1 = ("洪O雯" in n)
@@ -112,56 +116,59 @@ def generate_schedule(staff_df, start_date, days):
                    parse_days(row.get("年假(年)", "")) + parse_days(row.get("國定假日(國)", ""))
         assign_A = parse_days(row.get("指定早(A)", ""))
         assign_B = parse_days(row.get("指定晚(B)", ""))
+        
+        manual_A_all[n] = assign_A
+        manual_B_all[n] = assign_B
 
         for d in range(days):
             day_num = d + 1
-            if day_num in off_days:
+            # 💡 特權 1: 指定排班絕對優先 (蓋過劃休設定)
+            if day_num in assign_A: 
+                model.Add(shifts[(n, d, 1)] == 1)
+            elif day_num in assign_B: 
+                model.Add(shifts[(n, d, 2)] == 1)
+            elif day_num in off_days:
                 if is_p1: model.Add(shifts[(n, d, 0)] == 1)
                 else:
                     p = model.NewBoolVar(f'p_off_{n}_{d}')
                     model.Add(shifts[(n, d, 0)] == 1).OnlyEnforceIf(p)
                     objective_terms.append(p * (2000 if is_p2 else 200))
-            else:
-                if day_num in assign_A: model.Add(shifts[(n, d, 1)] == 1)
-                if day_num in assign_B: model.Add(shifts[(n, d, 2)] == 1)
 
     # === 區間人力門檻 & 四月特殊禁休規則 ===
     for d in range(days):
         day_num = d + 1
         
-        # 預設：早班 3~5 人，晚班 2~3 人
         min_A, max_A = 3, 5
         min_B, max_B = 2, 3 
         
         if month == 4:
             if day_num in [4, 5]:
                 min_A, max_A = 3, 5
-                min_B, max_B = 3, 3 # 4/4, 4/5 晚班硬性規定 3 人
+                min_B, max_B = 3, 3
 
             if day_num == 13:
-                # 4/13 全員禁休 (9人必須上班) -> 放寬最大人數限制防當機
                 max_A, max_B = 10, 10
                 for n in names:
-                    if not ("洪O雯" in n): model.Add(shifts[(n, d, 0)] == 0)
+                    if not ("洪O雯" in n) and day_num not in manual_A_all[n] and day_num not in manual_B_all[n]:
+                        model.Add(shifts[(n, d, 0)] == 0)
 
             if day_num in [7, 21]:
                 banned_1 = ["徐O君", "鄭O潔", "孫O儀", "王O文", "張O喬"]
                 for n in names:
                     if any(b in n for b in banned_1) and not ("洪O雯" in n):
-                        model.Add(shifts[(n, d, 0)] == 0)
-            
-            if day_num in [17, 27]:
-                banned_2 = ["徐O君", "鄭O潔"]
-                for n in names:
-                    if any(b in n for b in banned_2) and not ("洪O雯" in n):
-                        model.Add(shifts[(n, d, 0)] == 0)
+                        if day_num not in manual_A_all[n] and day_num not in manual_B_all[n]:
+                            model.Add(shifts[(n, d, 0)] == 0)
+
+        # 💡 特權 2: 如果手動指定的人數超過 max 上限，自動放寬當天門檻防當機
+        day_manual_A_count = sum(1 for n in names if day_num in manual_A_all[n])
+        day_manual_B_count = sum(1 for n in names if day_num in manual_B_all[n])
+        max_A = max(max_A, day_manual_A_count)
+        max_B = max(max_B, day_manual_B_count)
 
         for n in names:
             model.Add(sum(shifts[(n, d, s)] for s in [0,1,2]) == 1)
-            # 鼓勵休假！給予自動排休加分(+5)，讓 AI 沒事就放人假，不亂抓人把上限塞滿
-            objective_terms.append(shifts[(n, d, 0)] * 5)
+            objective_terms.append(shifts[(n, d, 0)] * 5) # 鼓勵休假
         
-        # 寫入區間限制
         model.Add(sum(shifts[(n, d, 1)] for n in names) >= min_A)
         model.Add(sum(shifts[(n, d, 1)] for n in names) <= max_A)
         model.Add(sum(shifts[(n, d, 2)] for n in names) >= min_B)
@@ -171,14 +178,31 @@ def generate_schedule(staff_df, start_date, days):
     for n in names:
         is_p1 = ("洪O雯" in n)
         is_xu = ("徐O君" in n)
+        assigned_all = set(manual_A_all[n] + manual_B_all[n])
         
         if not is_p1:
-            for d in range(days-1): model.Add(shifts[(n,d,2)] + shifts[(n,d+1,1)] <= 1)
-            for d in range(days-4): model.Add(sum(shifts[(n,d+i,s)] for i in range(5) for s in [1,2]) <= 4)
+            # 💡 特權 3: 豁免晚接早
+            for d in range(days-1): 
+                day_today = d + 1
+                day_tmrw = d + 2
+                if day_today in manual_B_all[n] and day_tmrw in manual_A_all[n]:
+                    pass # 長官手動指定的，放行
+                else:
+                    model.Add(shifts[(n,d,2)] + shifts[(n,d+1,1)] <= 1)
             
-            # --- 關鍵修改：四月必休 11 天，其餘月份維持 9 天 ---
+            # 💡 特權 4: 豁免連四休一
+            for d in range(days-4): 
+                manual_in_window = sum(1 for i in range(5) if (d+i+1) in assigned_all)
+                if manual_in_window == 5:
+                    pass # 連續五天都是手動指定的，放行
+                else:
+                    model.Add(sum(shifts[(n,d+i,s)] for i in range(5) for s in [1,2]) <= 4)
+            
+            # 💡 特權 5: 豁免月休 11 天 (依據手動上班天數自動下調)
             required_offs = 11 if month == 4 else 9
-            model.Add(sum(shifts[(n,d,0)] for d in range(days)) >= required_offs)
+            actual_req_offs = min(required_offs, days - len(assigned_all))
+            if actual_req_offs > 0:
+                model.Add(sum(shifts[(n,d,0)] for d in range(days)) >= actual_req_offs)
             
         if not is_xu:
             total_A = sum(shifts[(n, d, 1)] for d in range(days))
@@ -189,23 +213,17 @@ def generate_schedule(staff_df, start_date, days):
             model.AddAbsEquality(abs_diff, diff)
             objective_terms.append(abs_diff * -15) 
 
-        # 防碎班邏輯 (避免做一休一)
+        # 防碎班邏輯
         for d in range(1, days - 1):
             iso_work = model.NewBoolVar(f'iso_work_{n}_{d}')
             model.AddBoolOr([
-                shifts[(n, d-1, 0)].Not(), 
-                shifts[(n, d, 0)],         
-                shifts[(n, d+1, 0)].Not(), 
-                iso_work                   
+                shifts[(n, d-1, 0)].Not(), shifts[(n, d, 0)], shifts[(n, d+1, 0)].Not(), iso_work                   
             ])
             objective_terms.append(iso_work * -30)
 
             iso_off = model.NewBoolVar(f'iso_off_{n}_{d}')
             model.AddBoolOr([
-                shifts[(n, d-1, 0)],       
-                shifts[(n, d, 0)].Not(),   
-                shifts[(n, d+1, 0)],       
-                iso_off                    
+                shifts[(n, d-1, 0)], shifts[(n, d, 0)].Not(), shifts[(n, d+1, 0)], iso_off                    
             ])
             objective_terms.append(iso_off * -30)
 
@@ -216,34 +234,4 @@ def generate_schedule(staff_df, start_date, days):
     if solver.Solve(model) in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         res = []
         for n in names:
-            row_dict = staff_df[staff_df["姓名"]==n].iloc[0].to_dict()
-            p_年 = parse_days(row_dict.get("年假(年)", "")); p_補 = parse_days(row_dict.get("補休(補)", ""))
-            p_國 = parse_days(row_dict.get("國定假日(國)", ""))
-            for d_idx, d_obj in enumerate(dates):
-                h = f"{d_obj.month}/{d_obj.day}({['一','二','三','四','五','六','日'][d_obj.weekday()]})"
-                day_num = d_idx + 1
-                if solver.Value(shifts[(n,d_idx,1)]): v="A"
-                elif solver.Value(shifts[(n,d_idx,2)]): v="B1"
-                else:
-                    if day_num in p_年: v="年"
-                    elif day_num in p_補: v="補"
-                    elif day_num in p_國: v="國"
-                    else: v="/"
-                row_dict[h] = v
-            res.append(row_dict)
-        return pd.DataFrame(res)
-    return None
-
-# --- 🚀 執行區 ---
-st.markdown("---")
-st.markdown("#### 📅 智慧排班機制說明：")
-st.info("⚠️ **區間人力機制**：早班 3~5人，晚班 2~3人。\n⚠️ **四月份休假升級**：全月強制保障 **11天** 休假（含國定假日）。\n⚠️ **4/13 防呆**：全體上班日自動解除最高人數限制。")
-
-if st.button("🚀 執行 AI 智慧排班"):
-    final_df = generate_schedule(edited_df, target_month, num_days)
-    if final_df is not None:
-        st.success("✅ 班表生成成功！每位同仁於四月皆已保障 11 天休假。")
-        st.data_editor(final_df, use_container_width=True, height=550)
-        st.download_button("📥 下載 CSV", final_df.to_csv(index=False).encode('utf-8-sig'), "Schedule.csv")
-    else:
-        st.error("🚨 條件衝突。請檢查指定班次是否不小心超過了 5A 或 3B，或是同仁劃休過多導致無法達到 11 天月休目標。")
+            row_dict = staff_df[staff_df["
