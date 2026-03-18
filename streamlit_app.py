@@ -234,4 +234,34 @@ def generate_schedule(staff_df, start_date, days):
     if solver.Solve(model) in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         res = []
         for n in names:
-            row_dict = staff_df[staff_df["
+            row_dict = staff_df[staff_df["姓名"]==n].iloc[0].to_dict()
+            p_年 = parse_days(row_dict.get("年假(年)", "")); p_補 = parse_days(row_dict.get("補休(補)", ""))
+            p_國 = parse_days(row_dict.get("國定假日(國)", ""))
+            for d_idx, d_obj in enumerate(dates):
+                h = f"{d_obj.month}/{d_obj.day}({['一','二','三','四','五','六','日'][d_obj.weekday()]})"
+                day_num = d_idx + 1
+                if solver.Value(shifts[(n,d_idx,1)]): v="A"
+                elif solver.Value(shifts[(n,d_idx,2)]): v="B1"
+                else:
+                    if day_num in p_年: v="年"
+                    elif day_num in p_補: v="補"
+                    elif day_num in p_國: v="國"
+                    else: v="/"
+                row_dict[h] = v
+            res.append(row_dict)
+        return pd.DataFrame(res)
+    return None
+
+# --- 🚀 執行區 ---
+st.markdown("---")
+st.markdown("#### 📅 智慧排班機制說明：")
+st.info("⭐ **指定班次絕對優先**：手動填寫的早/晚班將自動豁免所有健康規則與人數上限，徹底杜絕當機。\n⚠️ 早班 3~5人，晚班 2~3人，四月份保底休 11 天。")
+
+if st.button("🚀 執行 AI 智慧排班"):
+    final_df = generate_schedule(edited_df, target_month, num_days)
+    if final_df is not None:
+        st.success("✅ 班表生成成功！已完全遵照您的指定班次。")
+        st.data_editor(final_df, use_container_width=True, height=550)
+        st.download_button("📥 下載 CSV", final_df.to_csv(index=False).encode('utf-8-sig'), "Schedule.csv")
+    else:
+        st.error("🚨 極端狀況：可能單日排休人數過多，連最低的 3A2B 門檻都無法達到。")
